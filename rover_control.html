@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoverC Lab — Control Remoto</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;700&display=swap');
+
+  :root {
+    --bg:       #090d12;
+    --surface:  #0f1720;
+    --panel:    #141e2b;
+    --border:   #1e3048;
+    --accent:   #00e5ff;
+    --accent2:  #ff6b35;
+    --green:    #39ff6e;
+    --yellow:   #ffd93d;
+    --red:      #ff4757;
+    --text:     #cde4f5;
+    --muted:    #4a6880;
+    --mono:     'Share Tech Mono', monospace;
+    --sans:     'Exo 2', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-weight: 300;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Fondo animado con grid */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0;
+    background-image:
+      linear-gradient(rgba(0,229,255,.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+  }
+
+  .app { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 16px; }
+
+  /* Header */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px; margin-bottom: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .logo { font-family: var(--mono); font-size: 1.1rem; color: var(--accent); letter-spacing: 2px; }
+  .logo span { color: var(--accent2); }
+  .status-bar { display: flex; gap: 16px; align-items: center; font-family: var(--mono); font-size: .75rem; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: background .3s; }
+  .dot.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.err { background: var(--red); }
+  .status-label { color: var(--muted); }
+  .status-label.ok { color: var(--green); }
+
+  /* Grid principal */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 320px;
+    grid-template-rows: auto auto;
+    gap: 12px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .panel-title {
+    font-family: var(--mono); font-size: .7rem; color: var(--accent);
+    letter-spacing: 3px; text-transform: uppercase; margin-bottom: 14px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+
+  /* ── JOYSTICK ── */
+  .joystick-panel { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; align-items: center; }
+  #joystick-zone {
+    width: 200px; height: 200px; border-radius: 50%;
+    background: var(--surface);
+    border: 2px solid var(--border);
+    position: relative; cursor: crosshair;
+    touch-action: none;
+    box-shadow: inset 0 0 40px rgba(0,0,0,.5), 0 0 20px rgba(0,229,255,.05);
+  }
+  #joystick-zone::before {
+    content: ''; position: absolute; inset: 20px; border-radius: 50%;
+    border: 1px dashed var(--border);
+  }
+  #joystick-zone::after {
+    content: ''; position: absolute;
+    top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 4px; height: 4px; border-radius: 50%; background: var(--muted);
+  }
+  #joystick-thumb {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, var(--accent), #0077aa);
+    border: 2px solid var(--accent);
+    position: absolute;
+    top: 50%; left: 50%; transform: translate(-50%,-50%);
+    transition: box-shadow .1s;
+    box-shadow: 0 0 16px rgba(0,229,255,.5);
+    pointer-events: none;
+  }
+  #joystick-thumb.active { box-shadow: 0 0 28px rgba(0,229,255,.9); }
+
+  .joy-label {
+    font-family: var(--mono); font-size: .7rem; color: var(--muted);
+    margin-top: 10px; text-align: center;
+  }
+
+  /* ── BOTONES DIRECCIÓN ── */
+  .arrows-panel { grid-column: 2; grid-row: 1; }
+  .dpad {
+    display: grid;
+    grid-template-columns: repeat(3, 64px);
+    grid-template-rows: repeat(3, 64px);
+    gap: 6px; justify-content: center; margin-top: 8px;
+  }
+  .dpad-btn {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); font-size: 1.4rem;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: all .12s; user-select: none; touch-action: none;
+  }
+  .dpad-btn:active, .dpad-btn.pressed {
+    background: var(--accent); color: var(--bg);
+    border-color: var(--accent); box-shadow: 0 0 16px rgba(0,229,255,.6);
+    transform: scale(.95);
+  }
+  .dpad-btn.stop-btn {
+    background: rgba(255,71,87,.15); border-color: var(--red); color: var(--red);
+  }
+  .dpad-btn.stop-btn:active {
+    background: var(--red); color: white;
+  }
+  .dpad-center { grid-column: 2; grid-row: 2; }
+
+  /* Botones giro */
+  .rotate-row { display: flex; gap: 6px; justify-content: center; margin-top: 10px; }
+  .rot-btn {
+    flex: 1; padding: 10px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); font-size: 1.1rem; cursor: pointer;
+    transition: all .12s; touch-action: none;
+  }
+  .rot-btn:active, .rot-btn.pressed {
+    background: var(--accent2); color: white;
+    border-color: var(--accent2); box-shadow: 0 0 12px rgba(255,107,53,.5);
+  }
+
+  /* ── VELOCIDAD + GRIP ── */
+  .controls-panel { grid-column: 1 / 3; grid-row: 2; }
+  .controls-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+  .ctrl-group label {
+    font-family: var(--mono); font-size: .7rem; color: var(--muted);
+    display: flex; justify-content: space-between; margin-bottom: 8px;
+  }
+  .ctrl-group label span { color: var(--accent); }
+
+  input[type=range] {
+    width: 100%; height: 6px; border-radius: 3px;
+    -webkit-appearance: none; appearance: none;
+    background: var(--border); outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 10px rgba(0,229,255,.6); cursor: pointer;
+  }
+  #grip-slider::-webkit-slider-thumb { background: var(--accent2); box-shadow: 0 0 10px rgba(255,107,53,.6); }
+
+  .grip-btns { display: flex; gap: 8px; margin-top: 10px; }
+  .grip-btn {
+    flex: 1; padding: 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font-family: var(--mono);
+    font-size: .75rem; cursor: pointer; transition: all .15s; letter-spacing: 1px;
+  }
+  .grip-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+  .grip-btn.active { background: var(--accent2); color: white; border-color: var(--accent2); }
+
+  /* ── TELEMETRÍA ── */
+  .telem-panel { grid-column: 3; grid-row: 1 / 3; }
+
+  .telem-grid { display: flex; flex-direction: column; gap: 8px; }
+  .telem-item {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 12px;
+  }
+  .telem-key { font-family: var(--mono); font-size: .65rem; color: var(--muted); margin-bottom: 3px; }
+  .telem-val { font-family: var(--mono); font-size: 1rem; color: var(--accent); font-weight: 500; }
+  .telem-val.warn { color: var(--yellow); }
+  .telem-val.danger { color: var(--red); }
+
+  .bat-bar {
+    height: 4px; border-radius: 2px; background: var(--border); margin-top: 5px;
+  }
+  .bat-fill { height: 100%; border-radius: 2px; background: var(--green); transition: width .5s; }
+
+  .imu-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .imu-axis { text-align: center; }
+  .imu-axis .axis-label { font-family: var(--mono); font-size: .6rem; color: var(--muted); }
+  .imu-axis .axis-val { font-family: var(--mono); font-size: .8rem; color: var(--text); }
+
+  .dir-badge {
+    display: inline-block; padding: 3px 10px; border-radius: 4px;
+    font-family: var(--mono); font-size: .85rem; font-weight: 700;
+    background: rgba(0,229,255,.1); color: var(--accent);
+    border: 1px solid rgba(0,229,255,.3); letter-spacing: 2px;
+  }
+
+  /* ── MAPA ── */
+  .map-panel { grid-column: 1 / 3; grid-row: 3; }
+  #traj-canvas {
+    width: 100%; height: 160px; border-radius: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    display: block;
+  }
+  .map-controls { display: flex; gap: 8px; margin-top: 8px; }
+  .map-btn {
+    padding: 6px 14px; border-radius: 4px; border: 1px solid var(--border);
+    background: transparent; color: var(--muted); font-family: var(--mono);
+    font-size: .7rem; cursor: pointer; transition: all .15s; letter-spacing: 1px;
+  }
+  .map-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── LOG ── */
+  .log-panel { grid-column: 3; grid-row: 3; }
+  #log-box {
+    height: 140px; overflow-y: auto; font-family: var(--mono);
+    font-size: .68rem; color: var(--muted); line-height: 1.6;
+  }
+  #log-box .log-entry { padding: 1px 0; border-bottom: 1px solid rgba(255,255,255,.03); }
+  #log-box .log-entry.pub { color: var(--accent); }
+  #log-box .log-entry.recv { color: var(--green); }
+  #log-box .log-entry.err { color: var(--red); }
+  #log-box .log-entry.sys { color: var(--yellow); }
+
+  /* Responsive */
+  @media (max-width: 800px) {
+    .grid { grid-template-columns: 1fr 1fr; }
+    .telem-panel { grid-column: 1 / 3; grid-row: 3; }
+    .controls-panel { grid-column: 1 / 3; grid-row: 2; }
+    .map-panel, .log-panel { grid-column: 1 / 3; }
+  }
+  @media (max-width: 500px) {
+    .grid { grid-template-columns: 1fr; }
+    .telem-panel, .controls-panel, .map-panel, .log-panel,
+    .joystick-panel, .arrows-panel { grid-column: 1; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">ROVER<span>C</span>.PRO &mdash; LAB REMOTO</div>
+    <div class="status-bar">
+      <div class="dot" id="dot-wifi"></div>
+      <span class="status-label" id="lbl-wifi">WiFi</span>
+      <div class="dot" id="dot-mqtt"></div>
+      <span class="status-label" id="lbl-mqtt">MQTT</span>
+      <div class="dot" id="dot-robot"></div>
+      <span class="status-label" id="lbl-robot">Robot</span>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- Joystick -->
+    <div class="panel joystick-panel">
+      <div class="panel-title">// joystick</div>
+      <div id="joystick-zone">
+        <div id="joystick-thumb"></div>
+      </div>
+      <div class="joy-label">ARRASTRA PARA MOVER</div>
+    </div>
+
+    <!-- D-Pad -->
+    <div class="panel arrows-panel">
+      <div class="panel-title">// dirección</div>
+      <div class="dpad">
+        <div></div>
+        <button class="dpad-btn" data-dir="fwd"   id="btn-fwd">▲</button>
+        <div></div>
+        <button class="dpad-btn" data-dir="left"  id="btn-left">◀</button>
+        <button class="dpad-btn stop-btn dpad-center" data-dir="stop" id="btn-stop">■</button>
+        <button class="dpad-btn" data-dir="right" id="btn-right">▶</button>
+        <div></div>
+        <button class="dpad-btn" data-dir="bck"   id="btn-bck">▼</button>
+        <div></div>
+      </div>
+      <div class="rotate-row">
+        <button class="rot-btn" data-dir="ccw" id="btn-ccw">↺ CCW</button>
+        <button class="rot-btn" data-dir="cw"  id="btn-cw">CW ↻</button>
+      </div>
+    </div>
+
+    <!-- Telemetría -->
+    <div class="panel telem-panel">
+      <div class="panel-title">// telemetría</div>
+      <div class="telem-grid">
+
+        <div class="telem-item">
+          <div class="telem-key">DIRECCIÓN ACTUAL</div>
+          <div><span class="dir-badge" id="t-dir">STOP</span></div>
+        </div>
+
+        <div class="telem-item">
+          <div class="telem-key">BATERÍA</div>
+          <div class="telem-val" id="t-bat">-- V (-- %)</div>
+          <div class="bat-bar"><div class="bat-fill" id="bat-fill" style="width:0%"></div></div>
+        </div>
+
+        <div class="telem-item">
+          <div class="telem-key">SEÑAL WiFi (RSSI)</div>
+          <div class="telem-val" id="t-rssi">-- dBm</div>
+        </div>
+
+        <div class="telem-item">
+          <div class="telem-key">ACELERÓMETRO (g)</div>
+          <div class="imu-row">
+            <div class="imu-axis"><div class="axis-label">X</div><div class="axis-val" id="t-ax">--</div></div>
+            <div class="imu-axis"><div class="axis-label">Y</div><div class="axis-val" id="t-ay">--</div></div>
+            <div class="imu-axis"><div class="axis-label">Z</div><div class="axis-val" id="t-az">--</div></div>
+          </div>
+        </div>
+
+        <div class="telem-item">
+          <div class="telem-key">GIRÓSCOPO (°/s)</div>
+          <div class="imu-row">
+            <div class="imu-axis"><div class="axis-label">X</div><div class="axis-val" id="t-gx">--</div></div>
+            <div class="imu-axis"><div class="axis-label">Y</div><div class="axis-val" id="t-gy">--</div></div>
+            <div class="imu-axis"><div class="axis-label">Z</div><div class="axis-val" id="t-gz">--</div></div>
+          </div>
+        </div>
+
+        <div class="telem-item">
+          <div class="telem-key">PINZA</div>
+          <div class="telem-val" id="t-grip">-- °</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Velocidad + Pinza -->
+    <div class="panel controls-panel">
+      <div class="panel-title">// controles</div>
+      <div class="controls-row">
+        <div class="ctrl-group">
+          <label>VELOCIDAD <span id="spd-val">80</span> / 127</label>
+          <input type="range" id="spd-slider" min="20" max="127" value="80">
+        </div>
+        <div class="ctrl-group">
+          <label>PINZA <span id="grip-val">30</span> °</label>
+          <input type="range" id="grip-slider" min="30" max="150" value="30">
+          <div class="grip-btns">
+            <button class="grip-btn" id="grip-open-btn">ABRIR</button>
+            <button class="grip-btn" id="grip-close-btn">CERRAR</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mapa trayectoria -->
+    <div class="panel map-panel">
+      <div class="panel-title">// trayectoria estimada</div>
+      <canvas id="traj-canvas"></canvas>
+      <div class="map-controls">
+        <button class="map-btn" id="btn-clear-map">LIMPIAR</button>
+        <span style="font-family:var(--mono);font-size:.65rem;color:var(--muted);margin-left:auto">
+          Odometría estimada — solo referencia visual
+        </span>
+      </div>
+    </div>
+
+    <!-- Log -->
+    <div class="panel log-panel">
+      <div class="panel-title">// log MQTT</div>
+      <div id="log-box"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ─── Credenciales MQTT ────────────────────────────────────────
+const CFG = {
+  host:   '5dd303f2e6fc4da88f4f15cd6837e63a.s1.eu.hivemq.cloud',
+  port:   8884,          // WebSocket seguro (WSS) — browsers no pueden usar TCP 8883
+  user:   'rover_user',
+  pass:   'PruebaNumero1**',
+  clientId: 'web_' + Math.random().toString(16).slice(2, 8)
+};
+const TOPICS = {
+  cmd:   'rover/cmd',
+  grip:  'rover/grip',
+  beep:  'rover/beep',
+  telem: 'rover/telemetry'
+};
+
+// ─── Estado local ─────────────────────────────────────────────
+let speed      = 80;
+let gripAngle  = 30;
+let currentDir = 'stop';
+let lastTelem  = 0;
+let client     = null;
+
+// ─── Trayectoria ──────────────────────────────────────────────
+const canvas  = document.getElementById('traj-canvas');
+const ctx     = canvas.getContext('2d');
+let   trajPts = [];
+let   posX = 0, posY = 0, heading = 0;
+
+function resizeCanvas() {
+  canvas.width  = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+  drawTrajectory();
+}
+
+function drawTrajectory() {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  // Grid de fondo
+  ctx.strokeStyle = 'rgba(30,48,72,.8)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < w; x += 30) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+  for (let y = 0; y < h; y += 30) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+
+  // Centro
+  const cx = w/2, cy = h/2;
+  ctx.strokeStyle = 'rgba(0,229,255,.2)';
+  ctx.beginPath(); ctx.moveTo(cx-10,cy); ctx.lineTo(cx+10,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,cy-10); ctx.lineTo(cx,cy+10); ctx.stroke();
+
+  if (trajPts.length < 2) {
+    // Punto inicial
+    ctx.fillStyle = '#00e5ff';
+    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI*2); ctx.fill();
+    return;
+  }
+
+  // Traza con gradiente de color
+  for (let i = 1; i < trajPts.length; i++) {
+    const t = i / trajPts.length;
+    ctx.strokeStyle = `rgba(0,${Math.floor(150+105*t)},${Math.floor(200+55*t)},${0.4+0.6*t})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx + trajPts[i-1].x, cy - trajPts[i-1].y);
+    ctx.lineTo(cx + trajPts[i].x,   cy - trajPts[i].y);
+    ctx.stroke();
+  }
+
+  // Posición actual
+  const last = trajPts[trajPts.length-1];
+  ctx.fillStyle = '#00e5ff';
+  ctx.shadowColor = '#00e5ff'; ctx.shadowBlur = 10;
+  ctx.beginPath(); ctx.arc(cx + last.x, cy - last.y, 5, 0, Math.PI*2); ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+// Actualizar posición estimada basada en dir + IMU gz
+function updatePosition(dir, spd, dt) {
+  const v = (spd / 127) * 15;  // píxeles por tick
+  const rad = heading * Math.PI / 180;
+  if      (dir === 'fwd')   { posX += Math.sin(rad)*v; posY += Math.cos(rad)*v; }
+  else if (dir === 'bck')   { posX -= Math.sin(rad)*v; posY -= Math.cos(rad)*v; }
+  else if (dir === 'left')  { posX -= Math.cos(rad)*v; posY -= Math.sin(rad)*v; }
+  else if (dir === 'right') { posX += Math.cos(rad)*v; posY += Math.sin(rad)*v; }
+  else if (dir === 'cw')    { heading += 3; }
+  else if (dir === 'ccw')   { heading -= 3; }
+
+  // Clamp para no salir del canvas visible
+  posX = Math.max(-200, Math.min(200, posX));
+  posY = Math.max(-60,  Math.min(60,  posY));
+
+  trajPts.push({x: posX, y: posY});
+  if (trajPts.length > 500) trajPts.shift();
+  drawTrajectory();
+}
+
+// ─── Log ──────────────────────────────────────────────────────
+function log(msg, type='sys') {
+  const box = document.getElementById('log-box');
+  const t   = new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const el  = document.createElement('div');
+  el.className = `log-entry ${type}`;
+  el.textContent = `[${t}] ${msg}`;
+  box.prepend(el);
+  while (box.children.length > 60) box.removeChild(box.lastChild);
+}
+
+// ─── Publish ──────────────────────────────────────────────────
+function publish(topic, payload) {
+  if (!client || !client.connected) { log('Sin conexión MQTT', 'err'); return; }
+  const msg = JSON.stringify(payload);
+  client.publish(topic, msg, {qos: 0});
+  log(`PUB ${topic} ${msg}`, 'pub');
+}
+
+function sendCmd(dir) {
+  currentDir = dir;
+  const spd  = dir === 'stop' ? 0 : speed;
+  publish(TOPICS.cmd, {dir, spd});
+}
+
+function sendGrip(angle) {
+  gripAngle = angle;
+  document.getElementById('grip-slider').value = angle;
+  document.getElementById('grip-val').textContent = angle;
+  publish(TOPICS.grip, {angle});
+}
+
+// ─── Telemetría UI ────────────────────────────────────────────
+function updateTelemetry(data) {
+  lastTelem = Date.now();
+
+  // Estado de conexión robot
+  setDot('robot', 'ok', 'Robot OK');
+
+  document.getElementById('t-dir').textContent  = (data.dir || 'stop').toUpperCase();
+  document.getElementById('t-grip').textContent = `${data.grip ?? '--'} °`;
+  document.getElementById('t-rssi').textContent = `${data.rssi ?? '--'} dBm`;
+
+  // Batería
+  const batV   = data.bat_v   ?? 0;
+  const batPct = data.bat_pct ?? 0;
+  const batEl  = document.getElementById('t-bat');
+  batEl.textContent = `${batV.toFixed(2)} V (${batPct} %)`;
+  batEl.className   = 'telem-val' + (batPct < 20 ? ' danger' : batPct < 40 ? ' warn' : '');
+  document.getElementById('bat-fill').style.width  = `${batPct}%`;
+  document.getElementById('bat-fill').style.background =
+    batPct < 20 ? 'var(--red)' : batPct < 40 ? 'var(--yellow)' : 'var(--green)';
+
+  // IMU
+  ['ax','ay','az','gx','gy','gz'].forEach(k => {
+    const el = document.getElementById(`t-${k}`);
+    if (el && data[k] !== undefined) el.textContent = data[k].toFixed(2);
+  });
+
+  // Trayectoria
+  if (data.dir && data.spd > 0) updatePosition(data.dir, data.spd, 0.5);
+}
+
+// ─── Status dots ──────────────────────────────────────────────
+function setDot(id, state, label) {
+  const dot = document.getElementById(`dot-${id}`);
+  const lbl = document.getElementById(`lbl-${id}`);
+  dot.className = `dot ${state}`;
+  lbl.className = `status-label ${state}`;
+  if (label) lbl.textContent = label;
+}
+
+// ─── MQTT ─────────────────────────────────────────────────────
+function connectMQTT() {
+  const url = `wss://${CFG.host}:${CFG.port}/mqtt`;
+  log(`Conectando a ${CFG.host}...`, 'sys');
+
+  client = mqtt.connect(url, {
+    clientId:  CFG.clientId,
+    username:  CFG.user,
+    password:  CFG.pass,
+    clean:     true,
+    reconnectPeriod: 3000,
+    connectTimeout:  10000
+  });
+
+  client.on('connect', () => {
+    log('MQTT conectado', 'sys');
+    setDot('mqtt', 'ok', 'MQTT OK');
+    setDot('wifi', 'ok', 'WiFi OK');
+    client.subscribe(TOPICS.telem);
+  });
+
+  client.on('message', (topic, message) => {
+    if (topic === TOPICS.telem) {
+      try {
+        const data = JSON.parse(message.toString());
+        updateTelemetry(data);
+      } catch(e) { log('JSON inválido', 'err'); }
+    }
+  });
+
+  client.on('error', err => {
+    log(`Error: ${err.message}`, 'err');
+    setDot('mqtt', 'err', 'Error');
+  });
+
+  client.on('reconnect', () => {
+    log('Reconectando...', 'sys');
+    setDot('mqtt', '', 'Reconectando');
+  });
+
+  client.on('close', () => {
+    setDot('mqtt', 'err', 'Desconectado');
+    setDot('robot', 'err', 'Sin datos');
+  });
+}
+
+// ─── Joystick ─────────────────────────────────────────────────
+(function initJoystick() {
+  const zone  = document.getElementById('joystick-zone');
+  const thumb = document.getElementById('joystick-thumb');
+  const R     = 72;  // radio máximo del thumb
+  let   active = false, lastDir = 'stop';
+
+  function getDir(nx, ny) {
+    const mag = Math.sqrt(nx*nx + ny*ny);
+    if (mag < 0.25) return 'stop';
+    const angle = Math.atan2(ny, nx) * 180 / Math.PI;
+    if (angle > -45  && angle <= 45)   return 'right';
+    if (angle > 45   && angle <= 135)  return 'bck';
+    if (angle > 135  || angle <= -135) return 'left';
+    return 'fwd';
+  }
+
+  function move(e) {
+    if (!active) return;
+    const rect = zone.getBoundingClientRect();
+    const cx   = rect.left + rect.width/2;
+    const cy   = rect.top  + rect.height/2;
+    const touch = e.touches ? e.touches[0] : e;
+    let   dx  = touch.clientX - cx;
+    let   dy  = touch.clientY - cy;
+    const mag = Math.sqrt(dx*dx + dy*dy);
+    if (mag > R) { dx *= R/mag; dy *= R/mag; }
+
+    thumb.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    thumb.classList.toggle('active', mag > 20);
+
+    const nx = dx/R, ny = dy/R;
+    const dir = getDir(nx, ny);
+    if (dir !== lastDir) { lastDir = dir; sendCmd(dir); }
+  }
+
+  function end() {
+    active = false;
+    thumb.style.transform = 'translate(-50%, -50%)';
+    thumb.classList.remove('active');
+    if (lastDir !== 'stop') { lastDir = 'stop'; sendCmd('stop'); }
+  }
+
+  zone.addEventListener('mousedown',  e => { active=true; move(e); });
+  zone.addEventListener('touchstart', e => { active=true; move(e); e.preventDefault(); }, {passive:false});
+  window.addEventListener('mousemove',  move);
+  window.addEventListener('touchmove',  e => { move(e); e.preventDefault(); }, {passive:false});
+  window.addEventListener('mouseup',    end);
+  window.addEventListener('touchend',   end);
+})();
+
+// ─── D-Pad ────────────────────────────────────────────────────
+document.querySelectorAll('.dpad-btn, .rot-btn').forEach(btn => {
+  const dir = btn.dataset.dir;
+
+  function press() { btn.classList.add('pressed'); sendCmd(dir); }
+  function release() { btn.classList.remove('pressed'); if (dir !== 'stop') sendCmd('stop'); }
+
+  btn.addEventListener('mousedown',  press);
+  btn.addEventListener('touchstart', e => { press(); e.preventDefault(); }, {passive:false});
+  btn.addEventListener('mouseup',    release);
+  btn.addEventListener('mouseleave', release);
+  btn.addEventListener('touchend',   release);
+});
+
+// ─── Velocidad ────────────────────────────────────────────────
+document.getElementById('spd-slider').addEventListener('input', function() {
+  speed = parseInt(this.value);
+  document.getElementById('spd-val').textContent = speed;
+});
+
+// ─── Pinza ────────────────────────────────────────────────────
+document.getElementById('grip-slider').addEventListener('input', function() {
+  gripAngle = parseInt(this.value);
+  document.getElementById('grip-val').textContent = gripAngle;
+  publish(TOPICS.grip, {angle: gripAngle});
+});
+document.getElementById('grip-open-btn').addEventListener('click', () => sendGrip(30));
+document.getElementById('grip-close-btn').addEventListener('click', () => sendGrip(150));
+
+// ─── Mapa ─────────────────────────────────────────────────────
+document.getElementById('btn-clear-map').addEventListener('click', () => {
+  trajPts = []; posX = 0; posY = 0; heading = 0; drawTrajectory();
+});
+
+// ─── Watchdog robot ───────────────────────────────────────────
+setInterval(() => {
+  if (lastTelem > 0 && Date.now() - lastTelem > 3000) {
+    setDot('robot', 'err', 'Sin datos');
+  }
+}, 2000);
+
+// ─── Init ─────────────────────────────────────────────────────
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('load', () => {
+  resizeCanvas();
+  connectMQTT();
+  log('Interfaz lista. Conectando...', 'sys');
+});
+</script>
+</body>
+</html>
